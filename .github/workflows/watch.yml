@@ -35,6 +35,7 @@ env:
   NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
   WATCH_URL: ${{ secrets.WATCH_URL }}
   DATA_REPO: ${{ github.repository_owner }}/page-monitor-data
+  ARCHIVE_BASE: https://github.com/${{ github.repository_owner }}/page-monitor-data
   REAL: ${{ inputs.watch_url == '' && !inputs.selfcheck }}
 
 jobs:
@@ -94,7 +95,7 @@ jobs:
           saved=()
           for d in ../screenshots/zrzuty_*/; do
             name=$(basename "$d"); mkdir -p "runs/$name"
-            cp -r "$d". "runs/$name/"; cp ../screenshots/${name}*.zip "runs/$name/" 2>/dev/null || true
+            cp -r "$d". "runs/$name/"   # folder only (no zips) – easier to browse on GitHub
             saved+=("$name")
           done
           [ -n "$TEST_URL" ] && git checkout -q -- known_links.json status.json 2>/dev/null || true

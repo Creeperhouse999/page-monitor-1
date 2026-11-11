@@ -134,11 +134,11 @@ class Ntfy:
         return self._send(msg.encode("utf-8"), "POST",
                           {"title": title, "tags": tags, "click": click, "priority": priority})
 
-    def file(self, path, msg, title=None, tags=None, priority=None):
+    def file(self, path, msg, title=None, tags=None, priority=None, click=None):
         log(f"[ntfy] {title} [{Path(path).name}]" if IN_CLOUD else f"[ntfy] {title}: {msg} [{Path(path).name}]")
         data = Path(path).read_bytes()
         ok = self._send(data, "PUT", {"filename": Path(path).name, "message": msg, "title": title,
-                                      "tags": tags, "priority": priority})
+                                      "tags": tags, "priority": priority, "click": click})
         if ok:
             self.sent_bytes += len(data)
         return ok
@@ -830,12 +830,20 @@ def main():
     pages_dir, dd_dir = run_dir / "strony", run_dir / "listy_rozwijane"
     shots, texts = [], []
 
+    # Links into the private archive repo (files are uploaded there when the run ends).
+    archive = os.environ.get("ARCHIVE_BASE", "").rstrip("/")  # e.g. https://github.com/<owner>/page-monitor-data
+
+    def file_link(p):
+        return f"{archive}/blob/main/runs/{run_dir.name}/{p.relative_to(run_dir).as_posix()}" if archive else None
+
     def send(files, title, msg, tags="camera", priority=None):
         for i, p in enumerate(files, 1):
             shots.append(p)
             log(f"[shot] {p.relative_to(run_dir)} ({p.stat().st_size // 1024} KB)")
             part = f" (część {i}/{len(files)})" if len(files) > 1 else ""
-            if not ntfy.file(p, msg + part, title=title, tags=tags, priority=priority):
+            link_txt = f"\n{file_link(p)}" if archive else ""
+            if not ntfy.file(p, msg + part + link_txt, title=title, tags=tags, priority=priority,
+                             click=file_link(p)):
                 ntfy.text(f"{msg}{part}: nie udało się wysłać zrzutu (limit ntfy?). Jest w folderze na końcu.",
                           title=title, tags="warning")
 
@@ -997,8 +1005,10 @@ def main():
                       "Wszystkie strony masz w powiadomieniach wyżej.", title="Folder ze zrzutami 📁",
                       tags="warning")
             break
-        ntfy.file(z, f"Folder: strony/, listy_rozwijane/, pytania.txt{part}", title="Folder ze zrzutami 📁",
-                  tags="file_folder")
+        folder = f"{archive}/tree/main/runs/{run_dir.name}" if archive else None
+        ntfy.file(z, f"Folder: strony/, listy_rozwijane/, pytania.txt{part}"
+                     + (f"\nNa GitHubie (bez zipa): {folder}" if folder else ""),
+                  title="Folder ze zrzutami 📁", tags="file_folder", click=folder)
     if a.test:
         ntfy.text("Koniec testu. To był TEST – prawdziwa strona jest nadal obserwowana.",
                   title="Koniec testu", tags="test_tube")
