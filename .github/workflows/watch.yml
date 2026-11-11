@@ -105,11 +105,16 @@ jobs:
           git commit -qm "Update from ${{ github.repository }} run ${{ github.run_id }}"
           for i in 1 2 3; do git push -q && break; git pull -q --rebase -X theirs; done
           cd ..
-          T="Kopia zapisana na stałe 📦"; [ -n "$TEST_URL" ] && T="🧪 TEST · $T"
+          P=""; [ -n "$TEST_URL" ] && P="🧪 TEST · "
           for name in "${saved[@]}"; do
-            python ring.py notify "$T" \
-              "Folder $name jest w prywatnym repo: https://github.com/$DATA_REPO/tree/main/runs/$name" file_folder
+            URL="https://github.com/$DATA_REPO/tree/main/runs/$name"
+            python ring.py notify "${P}Folder na GitHubie 📁" \
+              "Wszystkie zrzuty, listy rozwijane i pytania.txt (zapisane na stałe): $URL" file_folder "$URL"
           done
+          if [ -n "$TEST_URL" ]; then
+            python ring.py notify "${P}Koniec testu" \
+              "Koniec testu. To był TEST – prawdziwa strona jest nadal obserwowana." test_tube
+          fi
         env:
           TEST_URL: ${{ inputs.watch_url }}
 

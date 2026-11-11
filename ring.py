@@ -46,10 +46,12 @@ def api(path):
         return json.loads(r.read())
 
 
-def ntfy(msg, title, tags="warning", priority="high"):
+def ntfy(msg, title, tags="warning", priority="high", click=""):
     if not NTFY.rsplit("/", 1)[1]:
         return
-    url = NTFY + "?" + urllib.parse.urlencode({"title": title, "tags": tags, "priority": priority})
+    time.sleep(1.2)  # keep messages >1 s apart so they show in order on the phone
+    url = NTFY + "?" + urllib.parse.urlencode({k: v for k, v in {"title": title, "tags": tags,
+                                               "priority": priority, "click": click}.items() if v})
     try:
         urllib.request.urlopen(urllib.request.Request(url, data=msg.encode(), method="POST"), timeout=30).read()
     except Exception as e:
@@ -175,5 +177,6 @@ if __name__ == "__main__":
         sync()
     elif cmd == "sentinel":
         sentinel(float(sys.argv[2]) if len(sys.argv) > 2 else 45)
-    elif cmd == "notify":  # ring.py notify "title" "message" [tags]
-        ntfy(sys.argv[3], sys.argv[2], tags=sys.argv[4] if len(sys.argv) > 4 else "", priority="default")
+    elif cmd == "notify":  # ring.py notify "title" "message" [tags] [click-url]
+        ntfy(sys.argv[3], sys.argv[2], tags=sys.argv[4] if len(sys.argv) > 4 else "", priority="default",
+             click=sys.argv[5] if len(sys.argv) > 5 else "")

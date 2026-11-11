@@ -997,7 +997,7 @@ def main():
     ntfy.text(f"Wszystkie zrzuty ekranu zrobione! 🎉\n{summary}\n"
               + (f"Listy rozwijane: {n_dd} (osobny folder).\n" if n_dd else "")
               + "Wysyłam folder...", title="Gotowe! 🎉", tags="tada")
-    zips = zip_folder(run_dir)
+    zips = zip_folder(run_dir)  # zip goes to ntfy only (never to GitHub)
     for i, z in enumerate(zips, 1):
         part = f" – część {i}/{len(zips)}" if len(zips) > 1 else ""
         if z.stat().st_size > ntfy.budget_left():
@@ -1005,10 +1005,13 @@ def main():
                       "Wszystkie strony masz w powiadomieniach wyżej.", title="Folder ze zrzutami 📁",
                       tags="warning")
             break
-        folder = f"{archive}/tree/main/runs/{run_dir.name}" if archive else None
-        ntfy.file(z, f"Folder: strony/, listy_rozwijane/, pytania.txt{part}"
-                     + (f"\nNa GitHubie (bez zipa): {folder}" if folder else ""),
-                  title="Folder ze zrzutami 📁", tags="file_folder", click=folder)
+        ntfy.file(z, f"Folder (zip): strony/, listy_rozwijane/, pytania.txt{part}",
+                  title="Folder ze zrzutami (zip) 📁", tags="file_folder")
+    if archive:
+        # Cloud: the workflow uploads the folder (no zip) to the private repo, THEN sends the
+        # GitHub folder link (works immediately) and, for test runs, "Koniec testu" as the last message.
+        log(f"done: {run_dir} (GitHub folder link + end message follow from the workflow)")
+        return
     if a.test:
         ntfy.text("Koniec testu. To był TEST – prawdziwa strona jest nadal obserwowana.",
                   title="Koniec testu", tags="test_tube")
