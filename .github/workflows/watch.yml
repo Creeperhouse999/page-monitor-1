@@ -1,0 +1,124 @@
+name: watch
+run-name: ${{ inputs.watch_url != '' && 'TEST watch' || (inputs.selfcheck && 'selfcheck' || 'watch') }}
+
+# Started by the sentinel (sentinel.yml) or by the previous run (self-chain).
+# Only one repo of the ring page-monitor-1..10 is active at a time (see ring.py).
+# Config, state and saved runs live in the PRIVATE repo page-monitor-data.
+on:
+  workflow_dispatch:
+    inputs:
+      watch_url:
+        description: "TEST ONLY: watch this page instead of the configured one"
+        required: false
+        default: ""
+      max_minutes:
+        description: "TEST ONLY: how long the test run watches"
+        required: false
+        default: "25"
+      selfcheck:
+        description: "Quick health check of the real setup (1 check, no chaining)"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: ${{ inputs.watch_url != '' && 'test' || (inputs.selfcheck && 'selfcheck' || 'watch-v2') }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+  GH_TOKEN: ${{ github.token }}
+  NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+  WATCH_URL: ${{ secrets.WATCH_URL }}
+  DATA_REPO: ${{ github.repository_owner }}/page-monitor-data
+  REAL: ${{ inputs.watch_url == '' && !inputs.selfcheck }}
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Am I the active one?
+        id: ring
+        run: |
+          if [ "$REAL" != "true" ] || python ring.py should-run; then echo "go=1" >> "$GITHUB_OUTPUT"; else echo "go=0" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Get private data
+        if: steps.ring.outputs.go == '1'
+        env:
+          DATA_SSH_KEY: ${{ secrets.DATA_SSH_KEY }}
+        run: |
+          install -m 600 /dev/null ~/data_key && printf '%s\n' "$DATA_SSH_KEY" > ~/data_key
+          echo "GIT_SSH_COMMAND=ssh -i $HOME/data_key -o StrictHostKeyChecking=accept-new" >> "$GITHUB_ENV"
+          GIT_SSH_COMMAND="ssh -i $HOME/data_key -o StrictHostKeyChecking=accept-new" \
+            git clone -q --depth 1 "git@github.com:$DATA_REPO.git" data
+          ls data
+
+      - name: Install Playwright
+        if: steps.ring.outputs.go == '1'
+        run: |
+          pip install -q playwright
+          python -m playwright install --with-deps chromium > /dev/null
+
+      - name: Watch
+        if: steps.ring.outputs.go == '1'
+        env:
+          TEST_URL: ${{ inputs.watch_url }}
+          TEST_MINUTES: ${{ inputs.max_minutes }}
+          SELFCHECK: ${{ inputs.selfcheck }}
+        run: |
+          if [ -n "$TEST_URL" ]; then
+            python watch_and_fill.py --watch-url "$TEST_URL" --state /tmp/test_state.json --test \
+              --interval 30 --max-minutes "$TEST_MINUTES"
+          else
+            MIN=50; [ "$SELFCHECK" = "true" ] && MIN=0.1
+            python watch_and_fill.py --auto --watch-url "$WATCH_URL" --state data/known_links.json \
+              --status data/status.json --stages data/stages.json --interval 60 --max-minutes "$MIN"
+          fi
+
+      - name: Save state and screenshots to private repo
+        if: always() && steps.ring.outputs.go == '1'
+        run: |
+          cd data
+          shopt -s nullglob
+          saved=()
+          for d in ../screenshots/zrzuty_*/; do
+            name=$(basename "$d"); mkdir -p "runs/$name"
+            cp -r "$d". "runs/$name/"; cp ../screenshots/${name}*.zip "runs/$name/" 2>/dev/null || true
+            saved+=("$name")
+          done
+          [ -n "$TEST_URL" ] && git checkout -q -- known_links.json status.json 2>/dev/null || true
+          git config user.name "page-monitor"; git config user.email "page-monitor@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo "nothing to save"; exit 0; }
+          git commit -qm "Update from ${{ github.repository }} run ${{ github.run_id }}"
+          for i in 1 2 3; do git push -q && break; git pull -q --rebase -X theirs; done
+          cd ..
+          T="Kopia zapisana na stałe 📦"; [ -n "$TEST_URL" ] && T="🧪 TEST · $T"
+          for name in "${saved[@]}"; do
+            python ring.py notify "$T" \
+              "Folder $name jest w prywatnym repo: https://github.com/$DATA_REPO/tree/main/runs/$name" file_folder
+          done
+        env:
+          TEST_URL: ${{ inputs.watch_url }}
+
+      # Chain: start the next run right away (only real runs, and only if still the active one).
+      - name: Start next run
+        if: always() && env.REAL == 'true' && steps.ring.outputs.go == '1'
+        run: |
+          python ring.py should-run || { echo "another repo is active – not chaining"; exit 0; }
+          for i in 1 2 3 4 5; do
+            gh workflow run watch.yml --repo "${{ github.repository }}" --ref main && exit 0
+            echo "dispatch failed, retry $i/5"; sleep $((i * 10))
+          done
+          echo "could not start next run – the sentinels will take over"; exit 1

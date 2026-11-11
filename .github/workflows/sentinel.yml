@@ -1,0 +1,42 @@
+name: sentinel
+
+# Runs in every repo of the ring. Every 2 min: is any repo watching? If nobody is,
+# the next repo in line starts watching and you get a push notification.
+# Each sentinel job lasts ~45 min and then starts the next one (self-chain);
+# the schedule is only a backup.
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sentinel
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+  GH_TOKEN: ${{ github.token }}
+  NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
+jobs:
+  sentinel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Watch the ring
+        run: python3 ring.py sentinel 45
+
+      - name: Start next sentinel run
+        if: always()
+        run: |
+          for i in 1 2 3 4 5; do
+            gh workflow run sentinel.yml --repo "${{ github.repository }}" --ref main && exit 0
+            sleep $((i * 10))
+          done
+          exit 1

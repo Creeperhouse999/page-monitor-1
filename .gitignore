@@ -1,0 +1,9 @@
+screenshots/
+__pycache__/
+.playwright-mcp/
+reference/
+run.bat
+known_links.json
+status.json
+stages.json
+data/
