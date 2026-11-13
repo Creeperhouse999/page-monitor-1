@@ -267,10 +267,22 @@ def stage_windows(status):
     return wins
 
 
+def stages_cfg():
+    return json.loads(STAGES_FILE.read_text(encoding="utf-8")) if STAGES_FILE.exists() else {}
+
+
+def ignored_links():
+    """Links the user chose to skip (stages.json "ignore_links")."""
+    return set(stages_cfg().get("ignore_links", []))
+
+
 def schedule_mode(status):
     """('active'|'daily', human-readable reason)."""
     t = now().replace(tzinfo=None)
-    if status.data.get("pending"):
+    pause = stages_cfg().get("pause_until")
+    if pause and t < datetime.strptime(pause[:10], "%Y-%m-%d"):
+        return "daily", f"pauza do {pause[:10]} – raz dziennie"
+    if status.data.get("pending") and status.data["pending"] not in ignored_links():
         return "active", "nowy link czeka na otwarcie"
     for start, end, day in stage_windows(status):
         if start <= t <= end:
@@ -821,6 +833,11 @@ def main():
     state = State(a.state)
     status = Status(a.status)
     mask(a.watch_url, a.url, status.data.get("pending"))
+    skip = ignored_links()
+    if skip:  # user-skipped links count as already handled
+        state.add(*skip)
+        if status.data.get("pending") in skip:
+            status.save(pending=None)
     if not (a.url or a.watch_url):
         ap.error("--watch-url (or env WATCH_URL) is required")
     deadline = time.time() + a.max_minutes * 60 if a.max_minutes else float("inf")
