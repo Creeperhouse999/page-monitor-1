@@ -892,8 +892,10 @@ def main():
         # Open the form. Link on the site but form not ready yet:
         #   exists but closed ("nie akceptuje odpowiedzi") -> retry every 5 s (it may open any second)
         #   not found / 404 (not published yet)            -> retry every 60 s
-        # (silent the whole time; notifications start only when it opens)
+        # One heads-up when the link is first spotted (never repeated, also not by later runs);
+        # after that silent until the form opens.
         slow = False
+        announced = status.data.get("announced") == link
         while True:
             if time.time() > deadline:
                 log("form not open yet, time budget used, exiting (next run continues)")
@@ -902,6 +904,18 @@ def main():
             t0 = time.time()
             st = probe_form(page, link)
             if st in ("closed", "notfound", "error"):
+                if not announced and st != "error":
+                    if a.test:
+                        ntfy.text("To jest TEST – strona testowa, nie prawdziwy formularz.",
+                                  title="Początek testu", tags="test_tube")
+                    why = "jeszcze zamknięty" if st == "closed" else "jeszcze nieopublikowany (nie znaleziono)"
+                    every = "5 s" if st == "closed" else "60 s"
+                    ntfy.text(f"Link pojawił się na stronie: {link}\nFormularz {why} – sprawdzam co {every} "
+                              "i wyślę zrzuty, gdy tylko się otworzy.",
+                              title="Link znaleziony 👀 (czekam na otwarcie)", tags="eyes", click=link,
+                              priority="high")
+                    status.save(announced=link)
+                    announced = True
                 slow = st == "notfound" or (slow and st == "error")
                 wait = max(0.5, (a.form_slow if slow else a.form_fast) - (time.time() - t0))
                 log(f"[form] {st} – next check in {wait:.0f}s")
@@ -921,12 +935,16 @@ def main():
                 browser.close()
                 return
             break  # open
-        if a.test:
+        if a.test and not announced:
             ntfy.text("To jest TEST – strona testowa, nie prawdziwy formularz.\n"
                       "Wszystkie powiadomienia z tego przebiegu mają w tytule „🧪 TEST”.",
                       title="Początek testu", tags="test_tube")
-        ntfy.text(f"Link znaleziony! {link}\nOtwieram...", title="Link znaleziony! 🔗",
-                  tags="link", click=link, priority="high")
+        if announced:
+            ntfy.text(f"Formularz jest OTWARTY: {link}\nOtwieram i robię zrzuty...",
+                      title="Formularz otwarty! 🔓", tags="unlock", click=link, priority="high")
+        else:
+            ntfy.text(f"Link znaleziony! {link}\nOtwieram...", title="Link znaleziony! 🔗",
+                      tags="link", click=link, priority="high")
 
         start = find_button(page, START_SELECTORS)
         if start:
