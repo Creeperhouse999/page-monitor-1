@@ -9,8 +9,8 @@ notifications via [ntfy](https://ntfy.sh). It never submits anything.
 ## How it works
 
 - **Check frequency:** every 60 s inside configured active windows, otherwise once a day.
-- **Form not ready yet:** retried every 5 s while it exists but is closed, every 60 s while it
-  returns "not found".
+- **Form not ready yet:** retried every 30 s (closed or "not found"); one heads-up notification
+  when the link first appears.
 - **Capture:** full-page screenshot of every page, all options of every dropdown (expanded),
   and a plain-text dump of all questions/options. Runs are bundled into a zip.
 - **Notifications:** sent in order, ≥ 1.1 s apart; attachments kept under ntfy's 2 MB limit.

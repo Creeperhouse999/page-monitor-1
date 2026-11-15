@@ -772,7 +772,7 @@ def click_and_wait(page, btn):
 
 FIELDS_SEL = ("input:not([type=hidden]), textarea, select, [role=radio], [role=checkbox], [role=listbox], "
               "[aria-haspopup=listbox], [data-automation-id=startNowButton]")
-FORM_FAST, FORM_SLOW = 5, 60  # seconds between form checks: closed (exists) / not found
+FORM_FAST, FORM_SLOW = 30, 30  # seconds between form checks: closed (exists) / not found
 
 
 def form_state(page, http_status=None):
@@ -848,9 +848,9 @@ def main():
     ap.add_argument("--status", help="JSON file for --auto (last daily check, dates seen, pending link)")
     ap.add_argument("--stages", default=str(STAGES_FILE), help="event dates file (default stages.json)")
     ap.add_argument("--form-fast", type=float, default=FORM_FAST,
-                    help="seconds between checks while the form exists but is closed (default 5)")
+                    help="seconds between checks while the form exists but is closed (default 30)")
     ap.add_argument("--form-slow", type=float, default=FORM_SLOW,
-                    help="seconds between checks while the form link shows 'not found' (default 60)")
+                    help="seconds between checks while the form link shows 'not found' (default 30)")
     ap.add_argument("--test", action="store_true",
                     help="test run: marks every notification as TEST and says so at the start and end")
     a = ap.parse_args()
@@ -955,7 +955,7 @@ def main():
                         ntfy.text("To jest TEST – strona testowa, nie prawdziwy formularz.",
                                   title="Początek testu", tags="test_tube")
                     why = "jeszcze zamknięty" if st == "closed" else "jeszcze nieopublikowany (nie znaleziono)"
-                    every = "5 s" if st == "closed" else "60 s"
+                    every = f"{a.form_fast if st == 'closed' else a.form_slow:g} s"
                     ntfy.text(f"Link pojawił się na stronie: {link}\nFormularz {why} – sprawdzam co {every} "
                               "i wyślę zrzuty, gdy tylko się otworzy.",
                               title="Link znaleziony 👀 (czekam na otwarcie)", tags="eyes", click=link,
