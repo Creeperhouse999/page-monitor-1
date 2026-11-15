@@ -271,6 +271,30 @@ def stages_cfg():
     return json.loads(STAGES_FILE.read_text(encoding="utf-8")) if STAGES_FILE.exists() else {}
 
 
+def pause_end():
+    """stages.json "pause_until": "YYYY-MM-DD" or "YYYY-MM-DD HH:MM" (Polish time) -> datetime or None."""
+    p = stages_cfg().get("pause_until")
+    if not p:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(p.strip(), fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def resume_link(status):
+    """stages.json "resume_link": a link to go back to once the pause ends (until it has been handled)."""
+    r = stages_cfg().get("resume_link")
+    return r if r and status.data.get("handled") != r else None
+
+
+def pending_link(status):
+    p = status.data.get("pending") or resume_link(status)
+    return p if p and p not in ignored_links() else None
+
+
 def ignored_links():
     """Links the user chose to skip (stages.json "ignore_links")."""
     return set(stages_cfg().get("ignore_links", []))
@@ -279,10 +303,10 @@ def ignored_links():
 def schedule_mode(status):
     """('active'|'daily', human-readable reason)."""
     t = now().replace(tzinfo=None)
-    pause = stages_cfg().get("pause_until")
-    if pause and t < datetime.strptime(pause[:10], "%Y-%m-%d"):
-        return "daily", f"pauza do {pause[:10]} – raz dziennie"
-    if status.data.get("pending") and status.data["pending"] not in ignored_links():
+    pause = pause_end()
+    if pause and t < pause:
+        return "daily", f"pauza do {pause:%d.%m.%Y %H:%M} – raz dziennie"
+    if pending_link(status):
         return "active", "nowy link czeka na otwarcie"
     for start, end, day in stage_windows(status):
         if start <= t <= end:
@@ -306,6 +330,8 @@ def auto_watch(page, a, state, status, deadline):
     while time.time() < deadline:
         mode, why = schedule_mode(status)
         log(f"[plan] tryb: {'AKTYWNY' if mode == 'active' else 'DZIENNY'} – {why}")
+        if mode == "active" and pending_link(status):
+            return pending_link(status)  # resume a known link (e.g. after a pause): go straight to the form
         if mode == "active":
             # watch in 10-min chunks so the plan is re-checked (window may end mid-run)
             link = wait_for_new_form_link(page, a.watch_url, a.interval, False, state,
@@ -326,6 +352,9 @@ def auto_watch(page, a, state, status, deadline):
         else:
             t = now().replace(tzinfo=None)
             starts = [s for s, _, _ in stage_windows(status) if s > t]
+            pe = pause_end()
+            if pe and pe > t:
+                starts.append(pe)  # wake up exactly when the pause ends
             wake = status.data["last_scan"] + 86400
             if starts:
                 wake = min(wake, time.time() + (min(starts) - t).total_seconds())
@@ -948,7 +977,7 @@ def main():
                      "Formularz wymaga zalogowania – nie mogę go wypełnić. Otwórz link ręcznie.",
                      tags="lock", priority="high")
                 state.add(link)
-                status.save(pending=None)
+                status.save(pending=None, handled=link)
                 browser.close()
                 return
             break  # open
@@ -1019,7 +1048,7 @@ def main():
         browser.close()
 
     state.add(link)  # handled: don't process this link again
-    status.save(pending=None)
+    status.save(pending=None, handled=link)
     n = pages_done
     summary = (f"Zrobiłem zrzuty {n} {plural_pl(n, 'strony', 'stron', 'stron') if n != 1 else 'strony'}"
                + (" (utknąłem po drodze)" if stuck else "")
