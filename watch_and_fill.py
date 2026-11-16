@@ -260,16 +260,38 @@ class Status:
             self.path.write_text(json.dumps(self.data, indent=1, ensure_ascii=False), encoding="utf-8")
 
 
+def stage_events(status):
+    """Stage start datetimes (Polish time): stages.json ("YYYY-MM-DD HH:MM") + dates read from the page
+    (no time on the page -> default_time, 09:00)."""
+    cfg = stages_cfg()
+    default_time = cfg.get("default_time", "09:00")
+    ev = {}
+    for s in cfg.get("stages", []):
+        s = s.strip()
+        try:
+            ev[s[:10]] = datetime.strptime(s if len(s) > 10 else f"{s} {default_time}", "%Y-%m-%d %H:%M")
+        except ValueError:
+            pass
+    for d in status.data.get("page_dates", []):
+        if d not in ev:
+            ev[d] = datetime.strptime(f"{d} {default_time}", "%Y-%m-%d %H:%M")
+    return sorted(ev.values())
+
+
 def stage_windows(status):
-    """[(start, end, stage_date)] in local (Polish) time: N days before .. end of N days after each date."""
-    cfg = json.loads(STAGES_FILE.read_text(encoding="utf-8")) if STAGES_FILE.exists() else {}
-    before, after = cfg.get("days_before", 7), cfg.get("days_after", 1)
-    days = {s[:10] for s in cfg.get("stages", [])} | set(status.data.get("page_dates", []))
-    wins = []
-    for d in sorted(days):
-        day = datetime.strptime(d, "%Y-%m-%d")
-        wins.append((day - timedelta(days=before), day + timedelta(days=after + 1) - timedelta(seconds=1), day))
-    return wins
+    """[(start, end, stage_start)]: from N days before (00:00) until stage start + stop_after_minutes
+    (default 60 -> test at 9:00, watching stops at 10:00 that day)."""
+    cfg = stages_cfg()
+    before, stop = cfg.get("days_before", 7), cfg.get("stop_after_minutes", 60)
+    return [(datetime(e.year, e.month, e.day) - timedelta(days=before), e + timedelta(minutes=stop), e)
+            for e in stage_events(status)]
+
+
+def waiting_stop(status, since):
+    """When to give up waiting for a form found at `since` (timestamp): the first stage end after it."""
+    t = datetime.fromtimestamp(since, TZ).replace(tzinfo=None) if TZ else datetime.fromtimestamp(since)
+    ends = [end for _, end, _ in stage_windows(status) if end > t]
+    return min(ends) if ends else None
 
 
 def stages_cfg():
@@ -295,9 +317,22 @@ def resume_link(status):
     return r if r and status.data.get("handled") != r else None
 
 
+def pending_since(status):
+    if status.data.get("pending"):
+        return status.data.get("pending_since") or time.time()
+    pe = pause_end()
+    return pe.timestamp() if pe else time.time()
+
+
 def pending_link(status):
+    """Link still waiting for its form to open – unless its stage already ended (e.g. 10:00 on test day)."""
     p = status.data.get("pending") or resume_link(status)
-    return p if p and p not in ignored_links() else None
+    if not p or p in ignored_links():
+        return None
+    stop = waiting_stop(status, pending_since(status))
+    if stop and now().replace(tzinfo=None) >= stop:
+        return None
+    return p
 
 
 def ignored_links():
@@ -369,7 +404,7 @@ def auto_watch(page, a, state, status, deadline):
             time.sleep(max(1, min(wake - time.time(), 300)))
             continue
         if link:
-            status.save(pending=link)  # stays active until this form has been handled
+            status.save(pending=link, pending_since=time.time())  # active until handled or stage ends
             return link
     return None
 
@@ -989,7 +1024,17 @@ def main():
         slow = False
         unknown_seen = None
         announced = status.data.get("announced") == link
+        stop_at = waiting_stop(status, pending_since(status)) if a.auto else None
         while True:
+            if stop_at and now().replace(tzinfo=None) >= stop_at:
+                log(f"[form] stage over ({stop_at:%d.%m %H:%M}) – stop waiting for this link")
+                ntfy.text(f"Koniec obserwacji ({stop_at:%H:%M}) – formularz się nie otworzył: {link}\n"
+                          "Wracam do sprawdzania raz dziennie do następnego etapu.",
+                          title="Koniec obserwacji ⏹️", tags="stop_button", priority="default")
+                state.add(link)
+                status.save(pending=None, handled=link)
+                browser.close()
+                return
             if time.time() > deadline:
                 log("form not open yet, time budget used, exiting (next run continues)")
                 browser.close()
