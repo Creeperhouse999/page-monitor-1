@@ -45,8 +45,13 @@ CLOSED_TEXTS = ("nie akceptuje odpowiedzi", "not accepting responses",
 NOT_FOUND_TEXTS = ("nie znaleziono", "not found", "nie można odnaleźć", "nie można znaleźć", "can't find",
                    "cannot find", "couldn't find", "nie istnieje", "doesn't exist", "does not exist",
                    "przepraszamy", "sorry")
-START_SELECTORS = ["[data-automation-id=startNowButton]",
-                   "button:has-text('Rozpocznij')", "button:has-text('Start now')"]
+START_WORDS = ("rozpocznij", "rozpocząć", "zacznij", "start", "begin")  # timed-quiz start screens
+START_SELECTORS = ["[data-automation-id=startNowButton]"] + [
+    f"{tag}:has-text('{w}')" for w in ("Rozpocznij", "Zacznij", "Start", "Begin")
+    for tag in ("button", "[role=button]")]
+CONFIRM_WORDS = ("rozpocznij", "start", "zacznij", "begin", "ok", "tak", "yes", "potwierdź", "kontynuuj",
+                 "continue")
+CANCEL_WORDS = ("anuluj", "cancel", "nie", "no", "wróć", "back", "zamknij", "close")
 NEXT_SELECTORS = ["[data-automation-id=nextButton]",
                   "button:has-text('Dalej')", "button:has-text('Next')",
                   "[role=button]:has-text('Dalej')", "[role=button]:has-text('Next')"]
@@ -685,6 +690,40 @@ def fill_page(page, numeric_text=False, dropdowns=None):
     return n
 
 
+def confirm_start_dialog(page, shot=None):
+    """Timed quizzes ask "Czy na pewno chcesz rozpocząć? Czas zacznie biec" – press the confirm button
+    (never Anuluj/Cancel). Returns True if a dialog was confirmed."""
+    for _ in range(3):
+        dlg = page.locator("[role=dialog]:visible, [role=alertdialog]:visible, .ms-Dialog:visible, "
+                           "[aria-modal=true]:visible").last
+        if not dlg.count():
+            return False
+        if shot:
+            try:
+                shot(page, "strona00_potwierdzenie", "Potwierdzenie startu 📸",
+                     "Okno „czy na pewno rozpocząć” – potwierdzam...")
+            except Exception:
+                pass
+        buttons = dlg.locator("button, [role=button]").all()
+        best = None
+        for b in buttons:
+            try:
+                t = b.inner_text().strip().lower()
+            except Exception:
+                continue
+            if not t or any(t.startswith(c) for c in CANCEL_WORDS):
+                continue
+            if any(w in t for w in CONFIRM_WORDS):
+                best = b
+                break
+        if not best:
+            return False
+        best.click()
+        page.wait_for_timeout(2000)
+        return True
+    return False
+
+
 def find_button(page, selectors):
     for sel in selectors:
         btn = page.locator(sel).first
@@ -790,8 +829,8 @@ def form_state(page, http_status=None):
         return "loading"
     if any(t in body for t in CLOSED_TEXTS):
         return "closed"
-    if page.locator(FIELDS_SEL).count():
-        return "open"
+    if page.locator(FIELDS_SEL).count() or find_button(page, START_SELECTORS):
+        return "open"  # questions, or a (timed quiz) start screen
     if any(t in body for t in NOT_FOUND_TEXTS):
         return "notfound"
     return "loading"
@@ -819,7 +858,14 @@ def probe_form(page, link, timeout=20):
             pass
         page.wait_for_timeout(1000)
         st = form_state(page, code)
-    return "notfound" if st == "loading" else st
+    if st == "loading":
+        # Not closed, no "not found", no fields, no start button: something we don't recognise.
+        try:
+            has_content = len(page.locator("body").inner_text().strip()) > 40
+        except Exception:
+            has_content = False
+        return "unknown" if has_content and "pagenotfound" not in page.url.lower() else "notfound"
+    return st
 
 
 def form_closed(page):
@@ -941,6 +987,7 @@ def main():
         # One heads-up when the link is first spotted (never repeated, also not by later runs);
         # after that silent until the form opens.
         slow = False
+        unknown_seen = None
         announced = status.data.get("announced") == link
         while True:
             if time.time() > deadline:
@@ -949,6 +996,18 @@ def main():
                 return
             t0 = time.time()
             st = probe_form(page, link)
+            if st == "unknown":
+                # Safety net: the form shows something we don't recognise -> send a screenshot (once per
+                # distinct page) so a human can look, and keep checking.
+                sig = page.locator("body").inner_text().strip()[:300]
+                if sig != unknown_seen:
+                    unknown_seen = sig
+                    shot(page, f"nieznana_strona_{len(shots) + 1:02d}", "Nie rozpoznaję strony formularza ⚠️",
+                         f"Formularz pokazuje coś nowego (zrzut). Sprawdź: {link}", tags="warning",
+                         priority="high")
+                log("[form] unknown page – next check in 30s")
+                time.sleep(max(0.5, a.form_fast - (time.time() - t0)))
+                continue
             if st in ("closed", "notfound", "error"):
                 if not announced and st != "error":
                     if a.test:
@@ -996,7 +1055,14 @@ def main():
         if start:
             shot(page, "strona00_start", "Strona startowa 📸", "Strona startowa – klikam „Rozpocznij”...")
             texts.append("===== STRONA STARTOWA =====\n" + page.locator("body").inner_text())
-            click_and_wait(page, start)
+            start.click()
+            page.wait_for_timeout(2000)
+            confirm_start_dialog(page, shot)
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except PWTimeout:
+                pass
+            page.wait_for_timeout(1500)
 
         pages_done, stuck = 0, False
         for step in range(1, 101):  # walk every page of the form
